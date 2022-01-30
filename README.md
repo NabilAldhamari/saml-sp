@@ -39,10 +39,6 @@ let sp = SAML.ServiceProvider({
     encyptionKeyLength: 2048
 });
 
-app.get('/', function(req, res){
-    res.redirect("/saml/consume");
-});
-
 app.get('/login', function(req, res){
     let SAMLRequest     = new SAML.Request(IDP_URL, REDIRECT_URI);
     let authNRequestURL = SAMLRequest.createAuthNURL();
