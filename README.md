@@ -34,7 +34,7 @@ let app        = express();
 const IDP_URL = "https://[IDP]/sso/saml";
 const SSO_URL = "http://localhost:8888/saml/consume";
 
-let sp = SAML.ServiceProvider({
+let sp = new SAML.ServiceProvider({
     assertionEndpoint: SSO_URL,
     encyptionKeyLength: 2048
 });
