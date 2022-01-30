@@ -1,0 +1,27 @@
+{
+    "name": "saml-sp",
+    "version": "1.0.1",
+    "description": "SAML-SP is a simple node.js library that allows for easy SAML service provider entity creation along with its RSA key-pairs and the decryption of assertions.",
+    "main": "response.js",
+    "scripts": {
+      "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "keywords": [
+      "saml",
+      "sso"
+    ],
+    "author": "Nabil Al-Dhamari",
+    "license": "MIT",
+
+    "repository": {
+        "type": "git",
+        "url": "git:/github.com/NabilAldhamari/saml-sp.git"
+    },
+
+    "dependencies": {
+        "xml-encryption": "^1.2.1",
+        "xmlbuilder2": "^2.4.0",
+        "xmldom": "^0.4.0",
+        "selfsigned":"^2.0.0"
+      }
+  }
