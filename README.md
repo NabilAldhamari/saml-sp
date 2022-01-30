@@ -7,7 +7,7 @@ SAML-SP is a simple node.js library that allows for easy SAML service provider e
 - Create the service provider metadata file to be uploaded to the Identity provider.
 - Formats and decrypts the assertions from the SAML response.
 ## Installation
-_Will be available to install via npm soon_
+```npm i saml-sp```
 
 ## Examples
 ### 1. Configure the Service provider ###
