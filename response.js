@@ -2,7 +2,7 @@ const SAML     = require("./saml-sp");
 const express  = require('express');
 let app        = express();
 
-const IDP_URL = "https://dev-2335629.okta.com/app/dev-2335629_nodejs_1/exk3r9e3lkfTLDzxU5d7/sso/saml";
+const IDP_URL = "https://[IDP]/sso/saml";
 const SSO_URL = "http://localhost:8888/saml/consume";
 
 let sp = SAML.ServiceProvider({
