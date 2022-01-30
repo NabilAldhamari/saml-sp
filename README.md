@@ -4,7 +4,7 @@ SAML-SP is a simple node.js library that allows for easy SAML service provider e
 
 ## Features
 - Generate RSA key-pairs or use existing ones.
-- Create the service provider metadata file to be uploaded to the Identity service provider.
+- Create the service provider metadata file to be uploaded to the Identity provider.
 - Formats and decrypts the assertions from the SAML response.
 ## Installation
 _Will be available to install via npm soon_
@@ -31,7 +31,7 @@ const SAML     = require("./saml-sp");
 const express  = require('express');
 let app        = express();
 
-const IDP_URL = "https://dev-2335629.okta.com/app/dev-2335629_nodejs_1/exk3r9e3lkfTLDzxU5d7/sso/saml";
+const IDP_URL = "https://[IDP]/sso/saml";
 const SSO_URL = "http://localhost:8888/saml/consume";
 
 let sp = SAML.ServiceProvider({
