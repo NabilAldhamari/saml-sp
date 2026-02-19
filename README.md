@@ -1,106 +1,196 @@
-# SAML-SP
-## _SAML Service Provider Node.js Library_
-SAML-SP is a simple node.js library that allows for easy SAML service provider entity creation along with its RSA key-pairs and the decryption of assertions.
+# saml-sp
+## _SAML 2.0 Service Provider Library for Node.js_
+
+`saml-sp` is a TypeScript-first Node.js library for implementing a SAML 2.0 Service Provider. It handles RSA keypair generation, SP metadata creation, AuthnRequest building, and encrypted assertion decryption.
+
+## Installation
+
+```bash
+npm install saml-sp
+```
 
 ## Features
-- Generate RSA key-pairs or use existing ones.
-- Create the service provider metadata file to be uploaded to the Identity provider.
-- Formats and decrypts the assertions from the SAML response.
-## Installation
-```npm i saml-sp```
 
-## Examples
-### 1. Configure the Service provider ###
+- Generate RSA keypairs (2048 or 4096-bit) or supply your own
+- Build SP metadata XML ready to upload to your Identity Provider
+- Generate AuthnRequest URLs for IdPs that require them (e.g. AWS IAM Identity Center)
+- Parse and decrypt SAML assertions from IdP POST responses
+- Full TypeScript types included
 
-```js
-const SAML     = require("./saml-sp");
-const SSO_URL  = "http://localhost:8888/saml/consume";
+---
 
-let sp = new SAML.ServiceProvider({
-    assertionEndpoint: SSO_URL
+## Quick Start
+
+### 1. Configure the Service Provider
+
+On first run, generate and save your keypair and metadata, then upload `metadata.xml` to your IdP.
+
+```ts
+import { ServiceProvider } from "saml-sp";
+
+const sp = await ServiceProvider.create({
+  assertionEndpoint: "https://yourapp.com/saml/consume",
+  entityID: "urn:yourapp:sp",   // optional
+  keyLength: 2048,              // optional, default: 2048
 });
 
-sp.saveRSAKeys(); // this will save the private key and certificate in the current directory
-sp.createMetaData(); // this will save the metadata.xml file in the current directory
+sp.saveKeys("./saml-keys");          // writes private.pem + cert.crt
+sp.createMetadata("./metadata.xml"); // writes metadata.xml
 ```
 
-### 2. Reading the SAMLResponse ###
+On subsequent runs, load your existing keypair instead of regenerating:
 
-```js
-const SAML     = require("./saml-sp");
-const express  = require('express');
-let app        = express();
+```ts
+import fs from "fs";
+import { ServiceProvider } from "saml-sp";
 
-const IDP_URL = "https://[IDP]/sso/saml";
-const SSO_URL = "http://localhost:8888/saml/consume";
-
-let sp = new SAML.ServiceProvider({
-    assertionEndpoint: SSO_URL,
-    encyptionKeyLength: 2048
-});
-
-app.get('/login', function(req, res){
-    let SAMLRequest     = new SAML.Request(IDP_URL, REDIRECT_URI);
-    let authNRequestURL = SAMLRequest.createAuthNURL();
-
-    // if okta then do not use the authNRequest URL
-    res.redirect(IDP_URL);
-
-    /*
-        // if authenticating against AWS SSO then
-        res.redirect(authNRequestURL);
-    */
-});
-
-app.post('/saml/consume', function(req, res, next){
-    let SAMLResponse = new SAML.Response(req);
-    SAMLResponse.decryptAssertions().then((decrypted_data) => {
-        console.log(decrypted_data);
-    });
-});
-
-app.get('/saml/consume', function(req,res){
-    res.redirect("/login");
-});
-
-app.listen(8888);
-```
-## Library Components
-The library exposes three different classes each one is used for a different phase of the SAML implementation as follows:
-### 1. Service provider Class ###
-```let sp = new SAML.ServiceProvider(options);```
-The options is an object that can have the following attributes:
-| Attrbute | note |
-| ------ | ------ |
-| assertionEndpoint (```*Required*```) | The redirect URI after a successful authentication with the IDP |
-| encyptionKeyLength | The length of the encryption key. default=1024 |
-| certificate | Supply a PEM certificate if you already have one, otherwise one will be created for you. |
-| privateKey | Supply a PEM Private Key if you already have one, otherwise one will be created for you. |
-| entityID | An optional entity ID to be added to your SAML requests. |
-
-### 2. Request Class ###
-```js
-let sp = new SAML.Request(IDP_URL, ASSERTION_ENDPOINT);
-let authNRequestURL = SAMLRequest.createAuthNURL();
-```
-Used to create the AuthNRequest for Identity providers such as AWS SSO, please note that some Identity providers like okta do not expect a SAML request in the URL therefore the user should be redirected to the SSO url without using this option.
-
-| Attrbute | note |
-| ------ | ------ |
-| IDP_URL (```*Required*```) | The SSO URL given to you by the Identity provider, this is where users go to authenticate. |
-| ASSERTION_ENDPOINT (```*Required*```) | The redirect URI after a successful authentication with the IDP |
-
-### 3. Response Class ###
-```js
-let SAMLResponse = new SAML.Response(req);
-SAMLResponse.decryptAssertions().then((decrypted_data) => {
-    console.log(decrypted_data);
+const sp = await ServiceProvider.create({
+  assertionEndpoint: "https://yourapp.com/saml/consume",
+  privateKey:  fs.readFileSync("./saml-keys/private.pem", "utf-8"),
+  certificate: fs.readFileSync("./saml-keys/cert.crt",    "utf-8"),
 });
 ```
-This class is used to interpret the SAMLResponse and decrypt the assertions.
-| Attrbute | note |
-| ------ | ------ |
-| req (```*Required*```) | The ```req``` object given by express js POST route. |
+
+### 2. Handle Login and the SAML Response
+
+```ts
+import express from "express";
+import fs from "fs";
+import { ServiceProvider, SAMLRequest, SAMLResponse } from "saml-sp";
+
+const app = express();
+
+const IDP_URL = "https://your-idp.example.com/sso/saml";
+const ACS_URL = "https://yourapp.com/saml/consume";
+
+const sp = await ServiceProvider.create({
+  assertionEndpoint: ACS_URL,
+  privateKey:  fs.readFileSync("./saml-keys/private.pem", "utf-8"),
+  certificate: fs.readFileSync("./saml-keys/cert.crt",    "utf-8"),
+});
+
+// Redirect users to the IdP to authenticate.
+// Some IdPs (e.g. Okta) only need the raw IdP SSO URL.
+// Others (e.g. AWS IAM Identity Center) require a signed AuthnRequest in the URL.
+app.get("/login", (req, res) => {
+  // With AuthnRequest (AWS IAM Identity Center, ADFS, etc.)
+  const samlReq = new SAMLRequest(IDP_URL, ACS_URL);
+  res.redirect(samlReq.createAuthNURL());
+
+  // Without AuthnRequest (Okta, etc.) — just redirect directly:
+  // res.redirect(IDP_URL);
+});
+
+// Receive and process the SAML response from the IdP.
+app.post("/saml/consume", async (req, res) => {
+  const samlRes = new SAMLResponse({
+    privateKey: fs.readFileSync("./saml-keys/private.pem", "utf-8"),
+  });
+
+  const assertion = await samlRes.processRequest(req);
+
+  if (!assertion) {
+    res.status(400).send("Invalid SAML response.");
+    return;
+  }
+
+  console.log("NameID:",     assertion.nameID);
+  console.log("Attributes:", assertion.attributes);
+
+  // Establish your session here, then redirect the user.
+  res.redirect("/dashboard");
+});
+
+app.get("/saml/consume", (req, res) => res.redirect("/login"));
+
+app.listen(3000);
+```
+
+---
+
+## API Reference
+
+### `ServiceProvider`
+
+#### `ServiceProvider.create(options): Promise<ServiceProvider>`
+
+Async factory method. Always use this instead of `new ServiceProvider()` when you need auto-generated keys.
+
+| Option | Type | Required | Description |
+|---|---|---|---|
+| `assertionEndpoint` | `string` | ✅ | Your ACS (Assertion Consumer Service) URL — where the IdP will POST the SAML response after login |
+| `privateKey` | `string` | — | PEM-encoded private key. If omitted alongside `certificate`, a keypair is generated automatically |
+| `certificate` | `string` | — | PEM-encoded certificate. Must be supplied together with `privateKey` |
+| `entityID` | `string` | — | SP entity ID included in requests and metadata. Defaults to a random value |
+| `keyLength` | `2048 \| 4096` | — | RSA key size used when auto-generating a keypair. Default: `2048` |
+
+#### `ServiceProvider.generateKeys(keyLength?): Promise<KeyPair>`
+
+Static method. Generates a new RSA keypair and self-signed certificate without creating a full `ServiceProvider` instance.
+
+#### `sp.createMetadata(outputPath?): string`
+
+Returns the SP metadata XML string. If `outputPath` is provided, also writes the file to disk.
+
+#### `sp.saveKeys(dir?): void`
+
+Writes `private.pem` and `cert.crt` to `dir` (default: current working directory).
+
+---
+
+### `SAMLRequest`
+
+```ts
+const samlReq = new SAMLRequest(idpURL, assertionEndpoint);
+```
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `idpURL` | `string` | ✅ | The SSO URL provided by your IdP |
+| `assertionEndpoint` | `string` | ✅ | Your ACS URL |
+
+#### `samlReq.generateAuthNRequest(): string`
+
+Returns the raw AuthnRequest XML string.
+
+#### `samlReq.createAuthNURL(): string`
+
+Returns the full IdP redirect URL with the Base64-encoded `SAMLRequest` query parameter appended. Any pre-existing query parameters on the IdP URL are preserved.
+
+---
+
+### `SAMLResponse`
+
+```ts
+const samlRes = new SAMLResponse({ privateKey: "..." });
+```
+
+| Option | Type | Required | Description |
+|---|---|---|---|
+| `privateKey` | `string` | ✅ | PEM-encoded private key used to decrypt assertions |
+
+#### `samlRes.processRequest(req): Promise<ParsedAssertion | null>`
+
+Reads and decodes the `SAMLResponse` POST parameter from an incoming HTTP request, then decrypts and parses the assertion. Returns `null` if no assertion is found.
+
+#### `samlRes.processXML(xml: string): Promise<ParsedAssertion | null>`
+
+Same as `processRequest`, but accepts a raw XML string directly. Useful if you've already extracted and decoded the response outside this library.
+
+#### `ParsedAssertion`
+
+| Field | Type | Description |
+|---|---|---|
+| `nameID` | `string \| null` | The authenticated user's NameID |
+| `attributes` | `Record<string, string[]>` | All attributes from the assertion's `AttributeStatement` |
+| `notBefore` | `Date \| null` | Assertion validity start time |
+| `notOnOrAfter` | `Date \| null` | Assertion expiry time |
+| `xml` | `string` | The raw decrypted assertion XML |
+
+Both methods validate `NotBefore` and `NotOnOrAfter` and throw if the assertion is outside its valid window.
+
+---
 
 ## License
+
 MIT

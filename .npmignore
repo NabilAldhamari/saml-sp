@@ -1,0 +1,21 @@
+# Source — consumers only need the compiled dist/
+src/
+tests/
+coverage/
+
+# Config
+tsconfig.json
+jest.config.ts
+.eslintrc.json
+.prettierrc
+
+# Misc
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.env
+.env.*

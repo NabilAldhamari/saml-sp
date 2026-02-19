@@ -1,0 +1,29 @@
+# Build output
+dist/
+coverage/
+
+# Dependencies
+node_modules/
+
+# Generated SAML key material — never commit private keys
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
+metadata.xml
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
