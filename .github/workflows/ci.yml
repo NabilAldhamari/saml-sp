@@ -1,11 +1,81 @@
-on: [push, pull_request]
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  quality:
+    name: Format, lint, typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with:
+          node-version: 22
+          cache: npm
       - run: npm ci
+      - run: npm run format:check
       - run: npm run lint
-      - run: npm test
+      - run: npm run typecheck
+
+  test:
+    name: Test (Node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 20, 22]
+        os: [ubuntu-latest]
+        include:
+          - node: 22
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # Coverage thresholds (90% global) are enforced by jest and fail the build.
+      - run: npm run test:coverage
+      - name: Upload coverage report
+        if: matrix.node == 22 && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/lcov.info
+
+  build:
+    name: Build & package checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Smoke-test CJS artifact
+        run: >
+          node -e "const { ServiceProvider, IdentityProvider, SAMLError } = require('./dist/index.js');
+          if (!ServiceProvider || !IdentityProvider || !SAMLError) process.exit(1);
+          const kp = ServiceProvider.generateKeyPair();
+          if (!kp.privateKey.includes('PRIVATE KEY')) process.exit(1);
+          console.log('CJS artifact OK');"
+      - name: Smoke-test ESM artifact
+        run: >
+          node --input-type=module -e "const { ServiceProvider, IdentityProvider, SAMLError } = await import('./dist/index.mjs');
+          if (!ServiceProvider || !IdentityProvider || !SAMLError) process.exit(1);
+          console.log('ESM artifact OK');"
+      - name: Review published package contents
+        run: npm pack --dry-run

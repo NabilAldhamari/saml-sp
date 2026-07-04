@@ -1,339 +1,267 @@
-import { EventEmitter } from "events";
-import { SAMLResponse } from "../src/SAMLResponse";
-import { ServiceProvider } from "../src/ServiceProvider";
-import { KeyPair } from "../src/types";
+import { X509Certificate, createPrivateKey } from "node:crypto";
+import { IdentityProvider, SAMLConfigError, SAMLParseError, ServiceProvider } from "../src";
+import {
+  ACS_URL,
+  buildValidResponse,
+  makeSp,
+  mockGetRequest,
+  mockPostRequest,
+  toPostBody,
+} from "./helpers/fixtures";
+import { IDP_KEYS, SP_KEYS } from "./helpers/keys";
 
-let sharedKeys: KeyPair;
+const IDP_CONFIG = {
+  entityId: "urn:test:idp",
+  ssoUrl: "https://idp.example.com/sso",
+  certificates: [IDP_KEYS.certificate],
+};
 
-beforeAll(async () => {
-    sharedKeys = await ServiceProvider.generateKeys(2048);
+describe("ServiceProvider — configuration validation", () => {
+  const base = {
+    entityId: "urn:test:sp",
+    assertionConsumerServiceUrl: ACS_URL,
+    idp: IDP_CONFIG,
+  };
+
+  it("constructs with a plain IdP config object", () => {
+    const sp = new ServiceProvider(base);
+    expect(sp.idp).toBeInstanceOf(IdentityProvider);
+  });
+
+  it("constructs with an IdentityProvider instance", () => {
+    const idp = new IdentityProvider(IDP_CONFIG);
+    const sp = new ServiceProvider({ ...base, idp });
+    expect(sp.idp).toBe(idp);
+  });
+
+  it.each([
+    ["empty entityId", { ...base, entityId: "  " }],
+    ["missing entityId", { ...base, entityId: undefined }],
+    ["missing ACS URL", { ...base, assertionConsumerServiceUrl: undefined }],
+    ["relative ACS URL", { ...base, assertionConsumerServiceUrl: "/saml/acs" }],
+    ["non-http ACS URL", { ...base, assertionConsumerServiceUrl: "ftp://sp.example.com/acs" }],
+    ["missing idp", { ...base, idp: undefined }],
+    ["invalid privateKey", { ...base, privateKey: "not-a-key" }],
+    ["invalid certificate", { ...base, certificate: "not-a-cert" }],
+    ["negative clockSkewMs", { ...base, clockSkewMs: -1 }],
+    ["NaN clockSkewMs", { ...base, clockSkewMs: Number.NaN }],
+    ["zero maxResponseSize", { ...base, maxResponseSize: 0 }],
+    ["signAuthnRequests without privateKey", { ...base, signAuthnRequests: true }],
+  ])("rejects %s", (_name, config) => {
+    expect(() => new ServiceProvider(config as never)).toThrow(SAMLConfigError);
+  });
+
+  it("trims the entityId", () => {
+    const sp = new ServiceProvider({ ...base, entityId: "  urn:test:sp  " });
+    expect(sp.entityId).toBe("urn:test:sp");
+  });
 });
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
+describe("ServiceProvider.generateKeyPair", () => {
+  it("returns a usable PEM keypair", () => {
+    const kp = ServiceProvider.generateKeyPair();
+    expect(() => createPrivateKey(kp.privateKey)).not.toThrow();
+    const cert = new X509Certificate(kp.certificate);
+    expect(cert.subject).toContain("saml-sp");
+  });
 
-/** Build a minimal assertion XML with configurable timestamps and attributes. */
-function buildAssertionXML({
-                               notBefore,
-                               notOnOrAfter,
-                               nameID = "user@example.com",
-                               attributes = {} as Record<string, string[]>,
-                               tagPrefix = "",
-                           }: {
-    notBefore?: Date;
-    notOnOrAfter?: Date;
-    nameID?: string;
-    attributes?: Record<string, string[]>;
-    tagPrefix?: string;
-}): string {
-    const p = tagPrefix ? `${tagPrefix}:` : "";
+  it("honours a custom common name", () => {
+    const kp = ServiceProvider.generateKeyPair({ commonName: "my-app" });
+    expect(new X509Certificate(kp.certificate).subject).toContain("my-app");
+  });
 
-    const conditionAttrs = [
-        notBefore ? `NotBefore="${notBefore.toISOString()}"` : "",
-        notOnOrAfter ? `NotOnOrAfter="${notOnOrAfter.toISOString()}"` : "",
-    ]
-        .filter(Boolean)
-        .join(" ");
+  it("produces keypairs accepted by the ServiceProvider constructor", () => {
+    const kp = ServiceProvider.generateKeyPair();
+    expect(
+      () =>
+        new ServiceProvider({
+          entityId: "urn:test:sp",
+          assertionConsumerServiceUrl: ACS_URL,
+          idp: IDP_CONFIG,
+          privateKey: kp.privateKey,
+          certificate: kp.certificate,
+        })
+    ).not.toThrow();
+  });
+});
 
-    const attrStatements = Object.entries(attributes)
-        .map(
-            ([name, values]) =>
-                `<${p}Attribute Name="${name}">` +
-                values
-                    .map((v) => `<${p}AttributeValue>${v}</${p}AttributeValue>`)
-                    .join("") +
-                `</${p}Attribute>`
-        )
-        .join("");
+describe("ServiceProvider.consume — input handling", () => {
+  it("consumes a pre-parsed body object and returns RelayState", async () => {
+    const sp = makeSp();
+    const xml = await buildValidResponse();
+    const { profile, relayState } = await sp.consume({
+      SAMLResponse: Buffer.from(xml).toString("base64"),
+      RelayState: "/dashboard",
+    });
+    expect(profile.nameId).toBe("alice@example.com");
+    expect(relayState).toBe("/dashboard");
+  });
 
-    return `
-    <${p}Assertion>
-      <${p}Conditions ${conditionAttrs}></${p}Conditions>
-      <${p}Subject>
-        <${p}NameID>${nameID}</${p}NameID>
-      </${p}Subject>
-      <${p}AttributeStatement>
-        ${attrStatements}
-      </${p}AttributeStatement>
-    </${p}Assertion>
-  `;
-}
+  it("omits relayState when the IdP sends an empty one", async () => {
+    const sp = makeSp();
+    const xml = await buildValidResponse();
+    const result = await sp.consume({
+      SAMLResponse: Buffer.from(xml).toString("base64"),
+      RelayState: "",
+    });
+    expect(result.relayState).toBeUndefined();
+  });
 
-/** Wrap raw XML in a SAMLResponse envelope and Base64-encode it as a POST body. */
-function buildPostBody(innerXML: string): string {
-    const envelope = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">
-    ${innerXML}
-  </samlp:Response>`;
-    const encoded = Buffer.from(envelope).toString("base64");
-    return `SAMLResponse=${encodeURIComponent(encoded)}`;
-}
+  it("consumes a raw IncomingMessage POST", async () => {
+    const sp = makeSp();
+    const xml = await buildValidResponse();
+    const req = mockPostRequest(toPostBody(xml, "/after-login"));
+    const { profile, relayState } = await sp.consume(req as never);
+    expect(profile.nameId).toBe("alice@example.com");
+    expect(relayState).toBe("/after-login");
+  });
 
-/** Create a minimal mock of IncomingMessage that emits a POST body. */
-function mockPostRequest(body: string): any {
-    const emitter = new EventEmitter() as any;
-    emitter.method = "POST";
+  it("handles chunked request bodies", async () => {
+    const sp = makeSp();
+    const xml = await buildValidResponse();
+    const req = mockPostRequest(toPostBody(xml), 64);
+    const { profile } = await sp.consume(req as never);
+    expect(profile.nameId).toBe("alice@example.com");
+  });
+
+  it("handles string chunks from decoded streams", async () => {
+    const sp = makeSp();
+    const xml = await buildValidResponse();
+    const req = mockGetRequest();
+    req.method = "POST";
     process.nextTick(() => {
-        emitter.emit("data", Buffer.from(body));
-        emitter.emit("end");
+      req.emit("data", toPostBody(xml)); // string, not Buffer
+      req.emit("end");
     });
-    return emitter;
-}
+    const { profile } = await sp.consume(req as never);
+    expect(profile.nameId).toBe("alice@example.com");
+  });
 
-function mockGetRequest(): any {
-    const emitter = new EventEmitter() as any;
-    emitter.method = "GET";
-    return emitter;
-}
+  it("rejects non-POST requests with a helpful message", async () => {
+    const sp = makeSp();
+    await expect(sp.consume(mockGetRequest() as never)).rejects.toThrow(/HTTP POST/);
+  });
 
-// Reusable timestamps
-const PAST = new Date(Date.now() - 1000 * 60 * 60);       // 1 hour ago
-const FUTURE = new Date(Date.now() + 1000 * 60 * 60);     // 1 hour from now
-const FAR_PAST = new Date(Date.now() - 1000 * 60 * 60 * 2); // 2 hours ago
+  it("rejects bodies without a SAMLResponse parameter", async () => {
+    const sp = makeSp();
+    const req = mockPostRequest("foo=bar");
+    await expect(sp.consume(req as never)).rejects.toThrow(/no SAMLResponse/);
+  });
 
-// ---------------------------------------------------------------------------
-// Constructor
-// ---------------------------------------------------------------------------
+  it("propagates request stream errors", async () => {
+    const sp = makeSp();
+    const req = mockGetRequest();
+    req.method = "POST";
+    process.nextTick(() => req.emit("error", new Error("socket hang up")));
+    await expect(sp.consume(req as never)).rejects.toThrow("socket hang up");
+  });
 
-describe("SAMLResponse – constructor", () => {
-    it("throws when privateKey is missing", () => {
-        expect(() => new SAMLResponse({ privateKey: "" })).toThrow(
-            "privateKey is required"
-        );
-    });
+  it("aborts oversized request bodies and destroys the socket", async () => {
+    const sp = makeSp({ maxResponseSize: 128 });
+    const req = mockPostRequest(`SAMLResponse=${"A".repeat(4096)}`, 64);
+    await expect(sp.consume(req as never)).rejects.toThrow(/maximum accepted size/);
+    expect(req.destroyed).toBe(true);
+  });
 
-    it("constructs successfully with a valid private key", () => {
-        expect(
-            () => new SAMLResponse({ privateKey: sharedKeys.privateKey })
-        ).not.toThrow();
-    });
+  it("rejects an oversized SAMLResponse in a pre-parsed body", async () => {
+    const sp = makeSp({ maxResponseSize: 64 });
+    await expect(sp.consume({ SAMLResponse: "A".repeat(100) })).rejects.toThrow(
+      /maximum accepted size/
+    );
+  });
+
+  it.each([
+    ["null", null],
+    ["a number", 42],
+    ["an object without SAMLResponse", { foo: "bar" }],
+  ])("rejects %s as input", async (_name, input) => {
+    const sp = makeSp();
+    await expect(sp.consume(input as never)).rejects.toThrow(SAMLParseError);
+  });
+
+  it("rejects a SAMLResponse that is not base64", async () => {
+    const sp = makeSp();
+    await expect(sp.consume({ SAMLResponse: "!!!not-base64!!!" })).rejects.toThrow(
+      /not valid base64/
+    );
+  });
+
+  it("rejects base64 that does not decode to XML", async () => {
+    const sp = makeSp();
+    await expect(
+      sp.consume({ SAMLResponse: Buffer.from("hello world").toString("base64") })
+    ).rejects.toThrow(/not XML/);
+  });
+
+  it("tolerates whitespace inside the base64 payload", async () => {
+    const sp = makeSp();
+    const xml = await buildValidResponse();
+    const b64 = Buffer.from(xml).toString("base64");
+    const withNewlines = b64.replace(/(.{76})/g, "$1\n");
+    const { profile } = await sp.consume({ SAMLResponse: withNewlines });
+    expect(profile.nameId).toBe("alice@example.com");
+  });
 });
 
-// ---------------------------------------------------------------------------
-// processXML – basic parsing (unencrypted assertions)
-// ---------------------------------------------------------------------------
+describe("ServiceProvider.consumeXml — input handling", () => {
+  it("rejects empty input", async () => {
+    const sp = makeSp();
+    await expect(sp.consumeXml("")).rejects.toThrow(SAMLParseError);
+    await expect(sp.consumeXml("   ")).rejects.toThrow(SAMLParseError);
+  });
 
-describe("SAMLResponse – processXML – basic parsing", () => {
-    let samlResponse: SAMLResponse;
-
-    beforeAll(() => {
-        samlResponse = new SAMLResponse({ privateKey: sharedKeys.privateKey });
-    });
-
-    it("returns null when neither Assertion nor EncryptedAssertion is present", async () => {
-        const xml = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"></samlp:Response>`;
-        const result = await samlResponse.processXML(xml);
-        expect(result).toBeNull();
-    });
-
-    it("extracts nameID from a plain Assertion", async () => {
-        const xml = buildAssertionXML({
-            notBefore: PAST,
-            notOnOrAfter: FUTURE,
-            nameID: "alice@example.com",
-        });
-        const result = await samlResponse.processXML(xml);
-        expect(result?.nameID).toBe("alice@example.com");
-    });
-
-    it("extracts nameID using the saml2 namespace prefix", async () => {
-        const xml = buildAssertionXML({
-            notBefore: PAST,
-            notOnOrAfter: FUTURE,
-            nameID: "bob@example.com",
-            tagPrefix: "saml2",
-        });
-        const result = await samlResponse.processXML(xml);
-        expect(result?.nameID).toBe("bob@example.com");
-    });
-
-    it("returns null nameID when NameID element is absent", async () => {
-        const xml = `
-      <Assertion>
-        <Conditions NotBefore="${PAST.toISOString()}" NotOnOrAfter="${FUTURE.toISOString()}"></Conditions>
-        <Subject></Subject>
-      </Assertion>
-    `;
-        const result = await samlResponse.processXML(xml);
-        expect(result?.nameID).toBeNull();
-    });
-
-    it("extracts attributes correctly", async () => {
-        const xml = buildAssertionXML({
-            notBefore: PAST,
-            notOnOrAfter: FUTURE,
-            attributes: {
-                email: ["alice@example.com"],
-                roles: ["admin", "user"],
-            },
-        });
-        const result = await samlResponse.processXML(xml);
-        expect(result?.attributes["email"]).toEqual(["alice@example.com"]);
-        expect(result?.attributes["roles"]).toEqual(["admin", "user"]);
-    });
-
-    it("returns empty attributes object when AttributeStatement is absent", async () => {
-        const xml = `
-      <Assertion>
-        <Conditions NotBefore="${PAST.toISOString()}" NotOnOrAfter="${FUTURE.toISOString()}"></Conditions>
-      </Assertion>
-    `;
-        const result = await samlResponse.processXML(xml);
-        expect(result?.attributes).toEqual({});
-    });
-
-    it("returns the raw XML in the result", async () => {
-        const xml = buildAssertionXML({
-            notBefore: PAST,
-            notOnOrAfter: FUTURE,
-        });
-        const result = await samlResponse.processXML(xml);
-        expect(result?.xml).toContain("Assertion");
-    });
-
-    it("normalises CRLF line endings before parsing", async () => {
-        const xml = buildAssertionXML({
-            notBefore: PAST,
-            notOnOrAfter: FUTURE,
-            nameID: "carol@example.com",
-        }).replace(/\n/g, "\r\n");
-
-        const result = await samlResponse.processXML(xml);
-        expect(result?.nameID).toBe("carol@example.com");
-    });
+  it("rejects oversized XML", async () => {
+    const sp = makeSp({ maxResponseSize: 16 });
+    await expect(sp.consumeXml("<Response></Response>")).rejects.toThrow(/maximum accepted size/);
+  });
 });
 
-// ---------------------------------------------------------------------------
-// processXML – timestamp validation
-// ---------------------------------------------------------------------------
+describe("ServiceProvider.metadata", () => {
+  it("emits accurate SP metadata", () => {
+    const sp = makeSp();
+    const xml = sp.metadata();
+    expect(xml).toContain('entityID="urn:test:sp"');
+    expect(xml).toContain(`Location="${ACS_URL}"`);
+    expect(xml).toContain("urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST");
+    expect(xml).toContain('AuthnRequestsSigned="false"');
+    expect(xml).toContain('WantAssertionsSigned="true"');
+    expect(xml).toContain('use="signing"');
+    expect(xml).toContain('use="encryption"');
+    // v2 bugs that must stay fixed:
+    expect(xml).not.toContain("SingleLogoutService");
+    expect(xml).not.toContain("validUntil");
+  });
 
-describe("SAMLResponse – processXML – timestamp validation", () => {
-    let samlResponse: SAMLResponse;
+  it("reflects signAuthnRequests and requireSignedAssertions in the flags", () => {
+    const sp = makeSp({ signAuthnRequests: true, requireSignedAssertions: false });
+    const xml = sp.metadata();
+    expect(xml).toContain('AuthnRequestsSigned="true"');
+    expect(xml).toContain('WantAssertionsSigned="false"');
+  });
 
-    beforeAll(() => {
-        samlResponse = new SAMLResponse({ privateKey: sharedKeys.privateKey });
-    });
+  it("omits KeyDescriptors when no certificate is configured", () => {
+    const sp = makeSp({ certificate: undefined, privateKey: undefined });
+    expect(sp.metadata()).not.toContain("KeyDescriptor");
+  });
 
-    it("accepts a valid assertion (NotBefore in past, NotOnOrAfter in future)", async () => {
-        const xml = buildAssertionXML({ notBefore: PAST, notOnOrAfter: FUTURE });
-        await expect(samlResponse.processXML(xml)).resolves.not.toBeNull();
-    });
+  it("includes validUntil only when requested", () => {
+    const sp = makeSp();
+    const until = new Date("2030-01-01T00:00:00.000Z");
+    expect(sp.metadata({ validUntil: until })).toContain('validUntil="2030-01-01T00:00:00.000Z"');
+  });
 
-    it("throws when NotOnOrAfter is in the past", async () => {
-        const xml = buildAssertionXML({
-            notBefore: FAR_PAST,
-            notOnOrAfter: PAST,
-        });
-        await expect(samlResponse.processXML(xml)).rejects.toThrow(
-            "Assertion has expired"
-        );
-    });
+  it("embeds the certificate body without PEM armour", () => {
+    const sp = makeSp();
+    const xml = sp.metadata();
+    expect(xml).not.toContain("BEGIN CERTIFICATE");
+    const body = SP_KEYS.certificate
+      .replace(/-----(BEGIN|END) CERTIFICATE-----/g, "")
+      .replace(/\s+/g, "");
+    expect(xml).toContain(body.slice(0, 60));
+  });
 
-    it("throws when NotBefore is in the future", async () => {
-        const xml = buildAssertionXML({
-            notBefore: FUTURE,
-            notOnOrAfter: new Date(Date.now() + 1000 * 60 * 60 * 2),
-        });
-        await expect(samlResponse.processXML(xml)).rejects.toThrow(
-            "Assertion not yet valid"
-        );
-    });
-
-    it("accepts an assertion with no Conditions element", async () => {
-        const xml = `<Assertion><Subject><NameID>user@example.com</NameID></Subject></Assertion>`;
-        const result = await samlResponse.processXML(xml);
-        expect(result?.notBefore).toBeNull();
-        expect(result?.notOnOrAfter).toBeNull();
-    });
-
-    it("accepts an assertion with Conditions but no timestamp attributes", async () => {
-        const xml = `
-      <Assertion>
-        <Conditions></Conditions>
-        <Subject><NameID>user@example.com</NameID></Subject>
-      </Assertion>
-    `;
-        await expect(samlResponse.processXML(xml)).resolves.not.toBeNull();
-    });
-
-    it("populates notBefore and notOnOrAfter on the result", async () => {
-        const xml = buildAssertionXML({ notBefore: PAST, notOnOrAfter: FUTURE });
-        const result = await samlResponse.processXML(xml);
-        expect(result?.notBefore?.getTime()).toBeCloseTo(PAST.getTime(), -2);
-        expect(result?.notOnOrAfter?.getTime()).toBeCloseTo(FUTURE.getTime(), -2);
-    });
-});
-
-// ---------------------------------------------------------------------------
-// processRequest
-// ---------------------------------------------------------------------------
-
-describe("SAMLResponse – processRequest", () => {
-    let samlResponse: SAMLResponse;
-
-    beforeAll(() => {
-        samlResponse = new SAMLResponse({ privateKey: sharedKeys.privateKey });
-    });
-
-    it("rejects non-POST requests", async () => {
-        const req = mockGetRequest();
-        await expect(samlResponse.processRequest(req)).rejects.toThrow(
-            "HTTP POST"
-        );
-    });
-
-    it("returns null when SAMLResponse param is absent", async () => {
-        const req = mockPostRequest("foo=bar");
-        const result = await samlResponse.processRequest(req);
-        expect(result).toBeNull();
-    });
-
-    it("parses a valid POST body and returns an assertion", async () => {
-        const assertionXML = buildAssertionXML({
-            notBefore: PAST,
-            notOnOrAfter: FUTURE,
-            nameID: "dave@example.com",
-        });
-        const body = buildPostBody(assertionXML);
-        const req = mockPostRequest(body);
-
-        const result = await samlResponse.processRequest(req);
-        expect(result?.nameID).toBe("dave@example.com");
-    });
-
-    it("handles a chunked POST body correctly", async () => {
-        const assertionXML = buildAssertionXML({
-            notBefore: PAST,
-            notOnOrAfter: FUTURE,
-            nameID: "eve@example.com",
-        });
-        const body = buildPostBody(assertionXML);
-
-        const emitter = new EventEmitter() as any;
-        emitter.method = "POST";
-
-        // Emit data in two chunks
-        process.nextTick(() => {
-            const mid = Math.floor(body.length / 2);
-            emitter.emit("data", Buffer.from(body.slice(0, mid)));
-            emitter.emit("data", Buffer.from(body.slice(mid)));
-            emitter.emit("end");
-        });
-
-        const result = await samlResponse.processRequest(emitter);
-        expect(result?.nameID).toBe("eve@example.com");
-    });
-
-    it("propagates stream errors as rejected promises", async () => {
-        const emitter = new EventEmitter() as any;
-        emitter.method = "POST";
-
-        process.nextTick(() => {
-            emitter.emit("error", new Error("Stream exploded"));
-        });
-
-        await expect(samlResponse.processRequest(emitter)).rejects.toThrow(
-            "Stream exploded"
-        );
-    });
+  it("is rejected by IdentityProvider.fromMetadata with a helpful message", () => {
+    const sp = makeSp();
+    expect(() => IdentityProvider.fromMetadata(sp.metadata())).toThrow(/IdP.*not SP|not.*IdP/i);
+  });
 });

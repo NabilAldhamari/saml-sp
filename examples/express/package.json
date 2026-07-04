@@ -1,0 +1,13 @@
+{
+  "name": "saml-sp-express-example",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Minimal Express integration for saml-sp",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.0",
+    "saml-sp": "file:../.."
+  }
+}
