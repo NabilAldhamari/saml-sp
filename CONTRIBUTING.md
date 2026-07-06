@@ -48,6 +48,23 @@ Node.js ≥ 18 is required.
 3. `npm run verify` locally.
 4. Open the PR with a clear description of _why_. Small, focused PRs merge fast.
 
+## Commits and releases
+
+Releases are fully automated with [release-please](https://github.com/googleapis/release-please):
+every merge to `main` updates a running Release PR, and merging that PR tags a
+GitHub release and publishes to npm (with provenance) after the full verify gate.
+
+For that to work, commit messages (or at least the PR title, when squash-merging)
+must follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+- `feat: ...` -> minor version bump
+- `fix: ...` -> patch version bump
+- `feat!: ...` or a `BREAKING CHANGE:` footer -> major version bump
+- `docs:`, `chore:`, `test:`, `ci:`, `refactor:` -> no release on their own
+
+Never bump the version in `package.json` by hand; release-please owns it, along
+with `CHANGELOG.md` and `.release-please-manifest.json`.
+
 ## Reporting security issues
 
 Not via issues or PRs — see [SECURITY.md](./SECURITY.md).
