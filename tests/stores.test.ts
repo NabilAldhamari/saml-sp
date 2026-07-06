@@ -16,19 +16,24 @@ describe("InMemoryRequestStore", () => {
   });
 
   it("expires entries after the TTL", async () => {
-    const store = new InMemoryRequestStore(5);
+    const store = new InMemoryRequestStore(50);
     store.store("a");
-    await sleep(20);
+    await sleep(200);
     expect(store.consume("a")).toBe(false);
   });
 
   it("sweeps expired entries from size", async () => {
-    const store = new InMemoryRequestStore(5);
+    // Generous TTL so the pre-expiry assertion cannot flake on slow CI runners.
+    const store = new InMemoryRequestStore(2_000);
     store.store("a");
     store.store("b");
     expect(store.size).toBe(2);
-    await sleep(20);
-    expect(store.size).toBe(0);
+
+    const shortLived = new InMemoryRequestStore(50);
+    shortLived.store("a");
+    shortLived.store("b");
+    await sleep(200);
+    expect(shortLived.size).toBe(0);
   });
 
   it("evicts the oldest entry when maxEntries is reached", () => {
