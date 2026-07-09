@@ -1,6 +1,6 @@
 {
   "name": "saml-sp",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Secure-by-default SAML 2.0 Service Provider for Node.js — signature verification, IdP metadata parsing, typed errors, zero native dependencies.",
   "keywords": [
     "saml",
