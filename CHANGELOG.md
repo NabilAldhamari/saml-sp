@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres
 to [Semantic Versioning](https://semver.org/).
 
+## [3.1.0](https://github.com/NabilAldhamari/saml-sp/compare/v3.0.0...v3.1.0) (2026-07-09)
+
+
+### Features
+
+* add Single Logout (SLO) over the HTTP-Redirect binding ([c04ed14](https://github.com/NabilAldhamari/saml-sp/commit/c04ed146bc2645a206e88eccc1d7da94a4032cce))
+* add Single Logout (SLO) support ([6f4a3e5](https://github.com/NabilAldhamari/saml-sp/commit/6f4a3e5595e4fea740d2390b5c9ea6cbfc386315))
+
+
+### Documentation
+
+* readme cleanup ([1370ed1](https://github.com/NabilAldhamari/saml-sp/commit/1370ed1baecf584341b8d708976b82feff6997d9))
+
 ## [3.0.0] — 2026-07-04
 
 Security-focused rewrite. **v2 must not be used in production** — it performed
