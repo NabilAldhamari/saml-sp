@@ -42,7 +42,7 @@ SAML is where authentication bugs become account takeovers. Most libraries make 
 | TypeScript-first, dual ESM + CJS      |       ✅       |     ⚠️ CJS only      |            ⚠️             |    ❌    |
 | Config surface                        | 1 small object |   ~40 flat options   |           large           |  large   |
 
-If you need an IdP implementation or Single Logout today, use `samlify` or `@node-saml/node-saml`. If you need to **be a Service Provider** and want it correct on the first try, use saml-sp.
+If you need to **be an Identity Provider**, use `samlify`. If you need to **be a Service Provider** (login, logout, metadata) and want it correct on the first try, use saml-sp.
 
 ## Installation
 
@@ -114,6 +114,44 @@ app.listen(3000);
 
 That's the whole integration. No body-parser setup needed: `sp.consume(req)` reads the raw request itself with a size cap. If you already use `express.urlencoded()`, `sp.consume(req.body)` works too. A runnable version lives in [`examples/express`](./examples/express).
 
+## Single Logout (SLO)
+
+saml-sp supports both directions of SAML Single Logout over the HTTP-Redirect binding: the user clicks "log out" in your app (SP-initiated), or logs out at the IdP / another app and the IdP tells you (IdP-initiated). Messages are signed by default and inbound messages must be signed by the IdP.
+
+Add one config option (it is published in your metadata automatically) and one route:
+
+```ts
+const sp = new ServiceProvider({
+  // ...same as above...
+  singleLogoutServiceUrl: "https://my-app.example.com/saml/slo",
+});
+
+// SP-initiated: your "Log out" button. Use the values you saved at login.
+app.get("/logout", async (req, res) => {
+  const { url } = await sp.createLogoutRequest({
+    nameId: req.session.nameId,
+    nameIdFormat: req.session.nameIdFormat,
+    sessionIndex: req.session.sessionIndex,
+  });
+  req.session.destroy();
+  res.redirect(url); // off to the IdP
+});
+
+// The SLO endpoint receives BOTH directions; branch on result.type.
+app.get("/saml/slo", async (req, res) => {
+  const result = await sp.receiveLogout(req);
+  if (result.type === "response") {
+    // The IdP confirmed the logout we started.
+    return res.redirect("/logged-out");
+  }
+  // IdP-initiated: end the local session for result.nameId, then acknowledge.
+  await endSessionFor(result.nameId, result.sessionIndex);
+  res.redirect(result.responseUrl);
+});
+```
+
+Save `profile.nameId`, `profile.nameIdFormat`, and `profile.sessionIndex` in your session at login time; the IdP needs them to match the user. Inbound logout messages are verified (signature, issuer, destination, `InResponseTo`) exactly like login responses; failures throw the same typed errors.
+
 ## Setting up your IdP
 
 <details>
@@ -180,6 +218,8 @@ Every response passes a strict pipeline. There is no way to get a `profile` out 
 9. **InResponseTo**: responses must answer an AuthnRequest this SP actually issued. IdP-initiated SSO is off unless you enable `allowUnsolicited`.
 10. **Replay protection**: each assertion ID is accepted exactly once.
 
+Single Logout messages get the same treatment: the redirect-binding query signature is verified against the IdP certificates (required by default, SHA-1 refused), the inflated message is size-capped against decompression bombs, and issuer, destination, `InResponseTo`, and status are all checked before you see a result.
+
 NameID extraction is immune to comment-injection truncation, and `RelayState` comes back to you as untrusted data: never redirect to it without an allowlist.
 
 Found a vulnerability? Report it privately: see [SECURITY.md](./SECURITY.md).
@@ -188,29 +228,34 @@ Found a vulnerability? Report it privately: see [SECURITY.md](./SECURITY.md).
 
 ### `new ServiceProvider(config)`
 
-| Option                        | Type               | Default       | Description                                                           |
-| ----------------------------- | ------------------ | ------------- | --------------------------------------------------------------------- |
-| `entityId`                    | `string`           | required      | Unique ID of your SP. Must match what the IdP has registered.         |
-| `assertionConsumerServiceUrl` | `string`           | required      | Your ACS endpoint (absolute http(s) URL).                             |
-| `idp`                         | `IdentityProvider` | required      | The IdP to trust (instance or plain config object).                   |
-| `privateKey`                  | `string` (PEM)     |               | Enables decryption of encrypted assertions and request signing.       |
-| `certificate`                 | `string` (PEM)     |               | Published in your SP metadata.                                        |
-| `clockSkewMs`                 | `number`           | `30000`       | Tolerated clock difference between you and the IdP.                   |
-| `requireSignedAssertions`     | `boolean`          | `true`        | Assertion must be signature-covered. **Never disable in production.** |
-| `requireSignedResponse`       | `boolean`          | `false`       | Additionally require the outer `Response` to be signed.               |
-| `allowUnsolicited`            | `boolean`          | `false`       | Accept IdP-initiated responses (no `InResponseTo`).                   |
-| `allowSha1`                   | `boolean`          | `false`       | Accept SHA-1 signatures from legacy IdPs.                             |
-| `signAuthnRequests`           | `boolean`          | `false`       | Sign outgoing requests.                                               |
-| `nameIdFormat`                | `string`           | `unspecified` | `NameIDPolicy` format requested from the IdP.                         |
-| `maxResponseSize`             | `number`           | `1048576`     | Response size cap in bytes.                                           |
-| `requestStore`                | `RequestStore`     | in-memory     | Outstanding request IDs; plug in Redis for multi-instance.            |
-| `replayCache`                 | `ReplayCache`      | in-memory     | Consumed assertion IDs; plug in Redis for multi-instance.             |
+| Option                        | Type               | Default       | Description                                                            |
+| ----------------------------- | ------------------ | ------------- | ---------------------------------------------------------------------- |
+| `entityId`                    | `string`           | required      | Unique ID of your SP. Must match what the IdP has registered.          |
+| `assertionConsumerServiceUrl` | `string`           | required      | Your ACS endpoint (absolute http(s) URL).                              |
+| `idp`                         | `IdentityProvider` | required      | The IdP to trust (instance or plain config object).                    |
+| `privateKey`                  | `string` (PEM)     |               | Enables decryption of encrypted assertions and request signing.        |
+| `certificate`                 | `string` (PEM)     |               | Published in your SP metadata.                                         |
+| `clockSkewMs`                 | `number`           | `30000`       | Tolerated clock difference between you and the IdP.                    |
+| `requireSignedAssertions`     | `boolean`          | `true`        | Assertion must be signature-covered. **Never disable in production.**  |
+| `requireSignedResponse`       | `boolean`          | `false`       | Additionally require the outer `Response` to be signed.                |
+| `allowUnsolicited`            | `boolean`          | `false`       | Accept IdP-initiated responses (no `InResponseTo`).                    |
+| `allowSha1`                   | `boolean`          | `false`       | Accept SHA-1 signatures from legacy IdPs.                              |
+| `signAuthnRequests`           | `boolean`          | `false`       | Sign outgoing requests.                                                |
+| `singleLogoutServiceUrl`      | `string`           |               | Your SLO endpoint; enables Single Logout and is published in metadata. |
+| `signLogoutMessages`          | `boolean`          | `true`        | Sign outbound logout messages (needs `privateKey`).                    |
+| `requireSignedLogout`         | `boolean`          | `true`        | Require inbound logout messages to be signed by the IdP.               |
+| `nameIdFormat`                | `string`           | `unspecified` | `NameIDPolicy` format requested from the IdP.                          |
+| `maxResponseSize`             | `number`           | `1048576`     | Response size cap in bytes.                                            |
+| `requestStore`                | `RequestStore`     | in-memory     | Outstanding request IDs; plug in Redis for multi-instance.             |
+| `replayCache`                 | `ReplayCache`      | in-memory     | Consumed assertion IDs; plug in Redis for multi-instance.              |
 
 ### Methods
 
 - `await sp.createLoginRequest(options?)` returns `{ id, url, binding, xml, fields?, html?, relayState? }`. Options: `relayState`, `binding: "redirect" | "post"`, `forceAuthn`, `isPassive`. The POST binding returns hidden form `fields` plus a ready-to-serve auto-submitting `html` page.
 - `await sp.consume(input)` returns `{ profile, relayState? }`. Input is a raw `IncomingMessage` or a parsed body `{ SAMLResponse, RelayState }`.
 - `await sp.consumeXml(xml)` for already-decoded XML.
+- `await sp.createLogoutRequest({ nameId, nameIdFormat?, sessionIndex?, relayState? })` returns `{ id, url, xml }`; redirect the browser to `url`.
+- `await sp.receiveLogout(input)` handles the SLO endpoint (a GET `IncomingMessage` or raw query string). Returns `{ type: "response", ... }` for IdP confirmations or `{ type: "request", nameId, sessionIndex, responseUrl, ... }` for IdP-initiated logouts.
 - `sp.metadata(options?)` returns your SP metadata XML (`{ validUntil?: Date }`).
 - `ServiceProvider.generateKeyPair(options?)` returns `{ privateKey, certificate }`.
 
@@ -223,8 +268,10 @@ new IdentityProvider({
   entityId: "urn:idp",
   ssoUrl: "https://idp/sso", // HTTP-Redirect endpoint
   ssoPostUrl: "https://idp/sso", // HTTP-POST endpoint (optional)
+  sloUrl: "https://idp/slo", // SingleLogoutService (optional, enables SLO)
   certificates: [pemOrBase64], // signing certs; rollover supported
 });
+// fromMetadata()/fromUrl() pick up SingleLogoutService endpoints automatically.
 ```
 
 ### `profile`
@@ -296,11 +343,12 @@ Your request store was wiped (it's in-memory by default) or you run multiple ins
 
 Planned, in priority order:
 
-1. **Single Logout (SLO)**: SP-initiated `LogoutRequest`, `LogoutResponse` validation, and IdP-initiated logout handling (HTTP-Redirect binding, signed).
-2. **IdP metadata refresh**: opt-in periodic re-fetch of `fromUrl` metadata so IdP certificate rollover needs no redeploy.
-3. **Framework recipes**: first-class examples for Fastify, Next.js route handlers, and NestJS.
-4. **`npx saml-sp init`**: interactive CLI that generates your keypair, SP metadata, and starter code.
-5. **HTTP-Artifact binding** and signed SP metadata.
+1. **IdP metadata refresh**: opt-in periodic re-fetch of `fromUrl` metadata so IdP certificate rollover needs no redeploy.
+2. **Framework recipes**: first-class examples for Fastify, Next.js route handlers, and NestJS.
+3. **`npx saml-sp init`**: interactive CLI that generates your keypair, SP metadata, and starter code.
+4. **SLO over HTTP-POST binding** (Redirect is supported today), **HTTP-Artifact binding**, and signed SP metadata.
+
+Shipped: ~~Single Logout (SP- and IdP-initiated, HTTP-Redirect, signed)~~ in v3.1.
 
 Want one of these sooner? Open an issue and say so; priority follows demand.
 

@@ -24,6 +24,10 @@ export interface IdentityProviderConfig {
   ssoUrl?: string;
   /** SSO endpoint for the HTTP-POST binding. */
   ssoPostUrl?: string;
+  /** SingleLogoutService endpoint for the HTTP-Redirect binding (enables SLO). */
+  sloUrl?: string;
+  /** SingleLogoutService endpoint for the HTTP-POST binding. */
+  sloPostUrl?: string;
   /**
    * One or more X.509 signing certificates (PEM or raw base64). Multiple certificates
    * are tried in order, which supports IdP certificate rollover.
@@ -82,6 +86,18 @@ export interface ServiceProviderConfig {
   signAuthnRequests?: boolean;
   /** `NameIDPolicy` format requested in AuthnRequests. Default: `urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified`. */
   nameIdFormat?: string;
+  /**
+   * Your SP's SingleLogoutService endpoint (HTTP-Redirect binding). Published in SP
+   * metadata and required for the IdP to address logout messages back to you.
+   */
+  singleLogoutServiceUrl?: string;
+  /**
+   * Sign outbound LogoutRequest/LogoutResponse messages when a `privateKey` is
+   * available. Default: `true`. (No signing happens without a `privateKey`.)
+   */
+  signLogoutMessages?: boolean;
+  /** Require inbound SLO messages to carry a valid signature. Default: `true`. */
+  requireSignedLogout?: boolean;
   /** Maximum accepted SAML response size in bytes. Default: `1_048_576` (1 MiB). */
   maxResponseSize?: number;
   /** Store for outstanding request IDs. Default: in-memory with a 10-minute TTL. */
@@ -154,3 +170,59 @@ export interface SAMLResponseBody {
 
 /** Input accepted by `ServiceProvider.consume()`. */
 export type ConsumeInput = IncomingMessage | SAMLResponseBody;
+
+export interface LogoutRequestOptions {
+  /** The subject to log out. Pass `profile.nameId` from the original login. */
+  nameId: string;
+  /** The subject's NameID `Format`. Pass `profile.nameIdFormat` so the IdP can match the subject. */
+  nameIdFormat?: string;
+  /** The IdP session to terminate. Pass `profile.sessionIndex`. */
+  sessionIndex?: string;
+  /** Opaque state echoed back on the LogoutResponse. Untrusted input on return. */
+  relayState?: string;
+}
+
+/** SP-initiated logout, ready to send via HTTP-Redirect. */
+export interface LogoutRequest {
+  /** The LogoutRequest ID. Stored automatically for `InResponseTo` validation. */
+  id: string;
+  binding: "redirect";
+  /** Redirect the user's browser here to begin logout at the IdP. */
+  url: string;
+  /** The raw LogoutRequest XML — useful for debugging. */
+  xml: string;
+  relayState?: string;
+}
+
+/** Result of `receiveLogout()` when the IdP answered our SP-initiated logout. */
+export interface LogoutResponseResult {
+  type: "response";
+  /** Always `true`: a non-Success status throws `ResponseStatusError` instead. */
+  success: true;
+  issuer: string | null;
+  /** The LogoutRequest ID this response answered, if any. */
+  inResponseTo: string | null;
+  relayState?: string;
+}
+
+/** Result of `receiveLogout()` when the IdP initiated the logout. */
+export interface LogoutRequestResult {
+  type: "request";
+  /** The subject the IdP wants logged out. Clear this user's local session. */
+  nameId: string | null;
+  /** The IdP session index being terminated, if provided. */
+  sessionIndex: string | null;
+  issuer: string | null;
+  relayState?: string;
+  /**
+   * Redirect the user's browser here to acknowledge the logout back to the IdP.
+   * The response is built and signed for you.
+   */
+  responseUrl: string;
+}
+
+/** Discriminated result of `receiveLogout()`. Branch on `.type`. */
+export type LogoutResult = LogoutResponseResult | LogoutRequestResult;
+
+/** Input accepted by `ServiceProvider.receiveLogout()`: a GET request or its raw query string. */
+export type LogoutInput = IncomingMessage | string;

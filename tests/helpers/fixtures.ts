@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { X509Certificate, randomBytes } from "node:crypto";
+import { X509Certificate, createSign, randomBytes } from "node:crypto";
+import { deflateRawSync } from "node:zlib";
 import { SignedXml } from "xml-crypto";
 import * as xmlenc from "xml-encryption";
 import { IdentityProvider } from "../../src/IdentityProvider";
@@ -10,8 +11,10 @@ import { IDP_KEYS, SP_KEYS } from "./keys";
 export const SP_ENTITY_ID = "urn:test:sp";
 export const IDP_ENTITY_ID = "urn:test:idp";
 export const ACS_URL = "https://sp.example.com/saml/acs";
+export const SP_SLO_URL = "https://sp.example.com/saml/slo";
 export const IDP_SSO_URL = "https://idp.example.com/sso/redirect";
 export const IDP_SSO_POST_URL = "https://idp.example.com/sso/post";
+export const IDP_SLO_URL = "https://idp.example.com/slo/redirect";
 
 export const RSA_SHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
 export const RSA_SHA1 = "http://www.w3.org/2000/09/xmldsig#rsa-sha1";
@@ -41,6 +44,7 @@ export function makeSp(overrides: Partial<ServiceProviderConfig> = {}): ServiceP
       entityId: IDP_ENTITY_ID,
       ssoUrl: IDP_SSO_URL,
       ssoPostUrl: IDP_SSO_POST_URL,
+      sloUrl: IDP_SLO_URL,
       certificates: [IDP_KEYS.certificate],
     }),
     privateKey: SP_KEYS.privateKey,
@@ -48,6 +52,11 @@ export function makeSp(overrides: Partial<ServiceProviderConfig> = {}): ServiceP
     allowUnsolicited: true,
     ...overrides,
   });
+}
+
+/** A ServiceProvider with SLO fully wired (SP + IdP logout endpoints). */
+export function makeLogoutSp(overrides: Partial<ServiceProviderConfig> = {}): ServiceProvider {
+  return makeSp({ singleLogoutServiceUrl: SP_SLO_URL, ...overrides });
 }
 
 // ---------------------------------------------------------------------------
@@ -314,6 +323,112 @@ export async function buildValidResponse(
     responseXml = signResponse(responseXml, responseId, options.signOptions);
   }
   return responseXml;
+}
+
+// ---------------------------------------------------------------------------
+// Single Logout builders (the "IdP side")
+// ---------------------------------------------------------------------------
+
+const SAMLP_NS = "urn:oasis:names:tc:SAML:2.0:protocol";
+const SAML_NS = "urn:oasis:names:tc:SAML:2.0:assertion";
+
+export interface IdpLogoutRequestOptions {
+  id?: string;
+  issuer?: string | null;
+  destination?: string | null;
+  nameId?: string;
+  sessionIndex?: string;
+}
+
+/** Build an IdP-initiated LogoutRequest XML. */
+export function buildIdpLogoutRequestXml(options: IdpLogoutRequestOptions = {}): string {
+  const {
+    id = testId(),
+    issuer = IDP_ENTITY_ID,
+    destination = SP_SLO_URL,
+    nameId = "alice@example.com",
+    sessionIndex = "session-123",
+  } = options;
+  const issuerXml = issuer === null ? "" : `<saml:Issuer>${issuer}</saml:Issuer>`;
+  const destAttr = destination === null ? "" : `Destination="${destination}"`;
+  const sessionXml = sessionIndex ? `<samlp:SessionIndex>${sessionIndex}</samlp:SessionIndex>` : "";
+  return `<samlp:LogoutRequest xmlns:samlp="${SAMLP_NS}" xmlns:saml="${SAML_NS}" ID="${id}" Version="2.0" IssueInstant="${new Date().toISOString()}" ${destAttr}>${issuerXml}<saml:NameID>${nameId}</saml:NameID>${sessionXml}</samlp:LogoutRequest>`;
+}
+
+export interface IdpLogoutResponseOptions {
+  id?: string;
+  issuer?: string | null;
+  destination?: string | null;
+  inResponseTo?: string;
+  statusCode?: string;
+  subStatusCode?: string;
+  statusMessage?: string;
+  omitStatus?: boolean;
+}
+
+/** Build an IdP LogoutResponse XML answering our LogoutRequest. */
+export function buildIdpLogoutResponseXml(options: IdpLogoutResponseOptions = {}): string {
+  const {
+    id = testId(),
+    issuer = IDP_ENTITY_ID,
+    destination = SP_SLO_URL,
+    inResponseTo,
+    statusCode = "urn:oasis:names:tc:SAML:2.0:status:Success",
+    subStatusCode,
+    statusMessage,
+    omitStatus = false,
+  } = options;
+  const issuerXml = issuer === null ? "" : `<saml:Issuer>${issuer}</saml:Issuer>`;
+  const destAttr = destination === null ? "" : `Destination="${destination}"`;
+  const irtAttr = inResponseTo ? `InResponseTo="${inResponseTo}"` : "";
+  const subXml = subStatusCode ? `<samlp:StatusCode Value="${subStatusCode}"/>` : "";
+  const messageXml = statusMessage
+    ? `<samlp:StatusMessage>${statusMessage}</samlp:StatusMessage>`
+    : "";
+  const statusXml = omitStatus
+    ? ""
+    : `<samlp:Status><samlp:StatusCode Value="${statusCode}">${subXml}</samlp:StatusCode>${messageXml}</samlp:Status>`;
+  return `<samlp:LogoutResponse xmlns:samlp="${SAMLP_NS}" xmlns:saml="${SAML_NS}" ID="${id}" Version="2.0" IssueInstant="${new Date().toISOString()}" ${destAttr} ${irtAttr}>${issuerXml}${statusXml}</samlp:LogoutResponse>`;
+}
+
+const REDIRECT_SIG_RSA_SHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
+
+export interface RedirectQueryOptions {
+  relayState?: string;
+  /** Sign the query with this key (defaults to the IdP key). Pass null to leave unsigned. */
+  privateKey?: string | null;
+  sigAlg?: string;
+}
+
+/** Encode a message as a signed (or unsigned) HTTP-Redirect binding query string. */
+export function toRedirectQuery(
+  type: "SAMLRequest" | "SAMLResponse",
+  xml: string,
+  options: RedirectQueryOptions = {}
+): string {
+  const encoded = deflateRawSync(Buffer.from(xml, "utf8")).toString("base64");
+  const parts = [`${type}=${encodeURIComponent(encoded)}`];
+  if (options.relayState !== undefined) {
+    parts.push(`RelayState=${encodeURIComponent(options.relayState)}`);
+  }
+  const signKey =
+    options.privateKey === null ? undefined : (options.privateKey ?? IDP_KEYS.privateKey);
+  if (signKey) {
+    const sigAlg = options.sigAlg ?? REDIRECT_SIG_RSA_SHA256;
+    parts.push(`SigAlg=${encodeURIComponent(sigAlg)}`);
+    const hash = sigAlg.endsWith("sha1") ? "RSA-SHA1" : "RSA-SHA256";
+    const signer = createSign(hash);
+    signer.update(parts.join("&"));
+    parts.push(`Signature=${encodeURIComponent(signer.sign(signKey).toString("base64"))}`);
+  }
+  return parts.join("&");
+}
+
+/** A mock GET IncomingMessage carrying a redirect-binding query at the given path. */
+export function mockGetRequestWithQuery(query: string, path = "/saml/slo"): MockRequest {
+  const req = mockGetRequest();
+  (req as unknown as { url: string }).url = `${path}?${query}`;
+  return req;
 }
 
 // ---------------------------------------------------------------------------

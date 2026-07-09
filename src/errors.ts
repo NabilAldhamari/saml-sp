@@ -98,10 +98,10 @@ export class ResponseStatusError extends SAMLValidationError {
   readonly statusMessage: string | null;
 
   constructor(statusCode: string, subStatusCode: string | null, statusMessage: string | null) {
-    const detail = [subStatusCode, statusMessage].filter(Boolean).join(" — ");
+    const detail = [subStatusCode, statusMessage].filter(Boolean).join(" / ");
     super(
       `IdP returned non-Success status "${statusCode}"${detail ? ` (${detail})` : ""}. ` +
-        "This usually means the IdP rejected the login (user denied, misconfigured app, or invalid request).",
+        "This usually means the IdP could not complete the request (user denied, misconfigured app, or invalid request).",
       "SAML_RESPONSE_STATUS"
     );
     this.statusCode = statusCode;

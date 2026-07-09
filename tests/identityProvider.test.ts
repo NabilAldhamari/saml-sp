@@ -8,7 +8,12 @@ const CERT_BODY = certificateBody(IDP_KEYS.certificate);
 function oktaMetadata({
   certBodies = [CERT_BODY],
   wantSigned = false,
-}: { certBodies?: string[]; wantSigned?: boolean } = {}): string {
+  withSlo = false,
+}: { certBodies?: string[]; wantSigned?: boolean; withSlo?: boolean } = {}): string {
+  const slo = withSlo
+    ? `<md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://dev-1.okta.com/app/app1/slo/saml"/>
+    <md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://dev-1.okta.com/app/app1/slo/saml/post"/>`
+    : "";
   const keyDescriptors = certBodies
     .map(
       (body) => `<md:KeyDescriptor use="signing">
@@ -22,6 +27,7 @@ function oktaMetadata({
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="http://www.okta.com/exk1234567890">
   <md:IDPSSODescriptor WantAuthnRequestsSigned="${wantSigned}" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
     ${keyDescriptors}
+    ${slo}
     <md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</md:NameIDFormat>
     <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://dev-1.okta.com/app/app1/sso/saml"/>
     <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://dev-1.okta.com/app/app1/sso/saml"/>
@@ -105,6 +111,18 @@ describe("IdentityProvider.fromMetadata", () => {
   it("reads WantAuthnRequestsSigned", () => {
     const idp = IdentityProvider.fromMetadata(oktaMetadata({ wantSigned: true }));
     expect(idp.wantAuthnRequestsSigned).toBe(true);
+  });
+
+  it("parses SingleLogoutService endpoints per binding", () => {
+    const idp = IdentityProvider.fromMetadata(oktaMetadata({ withSlo: true }));
+    expect(idp.sloUrl).toBe("https://dev-1.okta.com/app/app1/slo/saml");
+    expect(idp.sloPostUrl).toBe("https://dev-1.okta.com/app/app1/slo/saml/post");
+  });
+
+  it("leaves SLO endpoints undefined when the IdP offers none", () => {
+    const idp = IdentityProvider.fromMetadata(oktaMetadata());
+    expect(idp.sloUrl).toBeUndefined();
+    expect(idp.sloPostUrl).toBeUndefined();
   });
 
   it("accepts KeyDescriptors without a use attribute", () => {

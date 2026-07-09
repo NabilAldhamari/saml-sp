@@ -26,6 +26,10 @@ export class IdentityProvider {
   readonly ssoUrl?: string;
   /** SSO endpoint for the HTTP-POST binding, if the IdP offers one. */
   readonly ssoPostUrl?: string;
+  /** SingleLogoutService endpoint for the HTTP-Redirect binding, if the IdP offers one. */
+  readonly sloUrl?: string;
+  /** SingleLogoutService endpoint for the HTTP-POST binding, if the IdP offers one. */
+  readonly sloPostUrl?: string;
   /** Normalized PEM signing certificates, tried in order (supports rollover). */
   readonly certificates: readonly string[];
   /** Whether the IdP's metadata asks for signed AuthnRequests. */
@@ -42,6 +46,8 @@ export class IdentityProvider {
     }
     if (config.ssoUrl) assertHttpUrl(config.ssoUrl, "IdentityProvider ssoUrl");
     if (config.ssoPostUrl) assertHttpUrl(config.ssoPostUrl, "IdentityProvider ssoPostUrl");
+    if (config.sloUrl) assertHttpUrl(config.sloUrl, "IdentityProvider sloUrl");
+    if (config.sloPostUrl) assertHttpUrl(config.sloPostUrl, "IdentityProvider sloPostUrl");
     if (!Array.isArray(config.certificates) || config.certificates.length === 0) {
       throw new SAMLConfigError(
         "IdentityProvider requires at least one signing certificate. " +
@@ -52,6 +58,8 @@ export class IdentityProvider {
     this.entityId = config.entityId.trim();
     this.ssoUrl = config.ssoUrl;
     this.ssoPostUrl = config.ssoPostUrl;
+    this.sloUrl = config.sloUrl;
+    this.sloPostUrl = config.sloPostUrl;
     this.certificates = config.certificates.map((cert) =>
       validateCertificate(cert, "IdP certificate")
     );
@@ -116,6 +124,16 @@ export class IdentityProvider {
       );
     }
 
+    let sloUrl: string | undefined;
+    let sloPostUrl: string | undefined;
+    for (const service of childElements(idpDescriptor, NS.MD, "SingleLogoutService")) {
+      const binding = service.getAttribute("Binding");
+      const location = service.getAttribute("Location");
+      if (!location) continue;
+      if (binding === REDIRECT_BINDING && !sloUrl) sloUrl = location;
+      if (binding === POST_BINDING && !sloPostUrl) sloPostUrl = location;
+    }
+
     const certificates: string[] = [];
     for (const keyDescriptor of childElements(idpDescriptor, NS.MD, "KeyDescriptor")) {
       const use = keyDescriptor.getAttribute("use");
@@ -140,6 +158,8 @@ export class IdentityProvider {
       entityId,
       ssoUrl,
       ssoPostUrl,
+      sloUrl,
+      sloPostUrl,
       certificates,
       wantAuthnRequestsSigned: wantSigned,
     });

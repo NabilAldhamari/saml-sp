@@ -4,6 +4,7 @@ import { certificateBody } from "./pem";
 export interface MetadataParams {
   entityId: string;
   assertionConsumerServiceUrl: string;
+  singleLogoutServiceUrl?: string;
   certificate?: string;
   signAuthnRequests: boolean;
   requireSignedAssertions: boolean;
@@ -11,6 +12,9 @@ export interface MetadataParams {
   /** Optional metadata expiry. Omitted by default so the document never goes stale. */
   validUntil?: Date;
 }
+
+const REDIRECT_BINDING = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect";
+const POST_BINDING = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
 
 /** Build SP metadata XML that accurately reflects the SP's configuration. */
 export function buildMetadataXml(params: MetadataParams): string {
@@ -29,6 +33,14 @@ export function buildMetadataXml(params: MetadataParams): string {
         "ds:X509Data": { "ds:X509Certificate": body },
       },
     }));
+  }
+
+  // Schema order: KeyDescriptor, SingleLogoutService, NameIDFormat, AssertionConsumerService.
+  if (params.singleLogoutServiceUrl) {
+    descriptor["md:SingleLogoutService"] = [
+      { "@Binding": REDIRECT_BINDING, "@Location": params.singleLogoutServiceUrl },
+      { "@Binding": POST_BINDING, "@Location": params.singleLogoutServiceUrl },
+    ];
   }
 
   descriptor["md:NameIDFormat"] = params.nameIdFormat;

@@ -1,5 +1,4 @@
-import { createSign, randomBytes } from "node:crypto";
-import { deflateRawSync } from "node:zlib";
+import { randomBytes } from "node:crypto";
 import { create } from "xmlbuilder2";
 import { SignedXml } from "xml-crypto";
 import { SAMLConfigError } from "../errors";
@@ -70,38 +69,6 @@ export function signAuthnRequestXml(xml: string, requestId: string, privateKey: 
     },
   });
   return sig.getSignedXml();
-}
-
-export interface RedirectUrlParams {
-  ssoUrl: string;
-  requestXml: string;
-  relayState?: string;
-  /** When provided, the query string is signed per the HTTP-Redirect binding spec. */
-  privateKey?: string;
-}
-
-/**
- * Build the HTTP-Redirect binding URL: `base64(deflateRaw(xml))`, URL-encoded,
- * optionally signed (SigAlg + Signature query parameters, computed over the
- * encoded query string in the exact order SAMLRequest, RelayState, SigAlg).
- */
-export function buildRedirectUrl(params: RedirectUrlParams): string {
-  const encoded = deflateRawSync(Buffer.from(params.requestXml, "utf8")).toString("base64");
-
-  const parts = [`SAMLRequest=${encodeURIComponent(encoded)}`];
-  if (params.relayState !== undefined) {
-    parts.push(`RelayState=${encodeURIComponent(params.relayState)}`);
-  }
-  if (params.privateKey) {
-    parts.push(`SigAlg=${encodeURIComponent(RSA_SHA256)}`);
-    const signer = createSign("RSA-SHA256");
-    signer.update(parts.join("&"));
-    const signature = signer.sign(params.privateKey).toString("base64");
-    parts.push(`Signature=${encodeURIComponent(signature)}`);
-  }
-
-  const separator = params.ssoUrl.includes("?") ? "&" : "?";
-  return `${params.ssoUrl}${separator}${parts.join("&")}`;
 }
 
 export interface PostBindingParams {
