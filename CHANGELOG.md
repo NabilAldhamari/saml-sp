@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres
 to [Semantic Versioning](https://semver.org/).
 
+## [3.1.1](https://github.com/NabilAldhamari/saml-sp/compare/v3.1.0...v3.1.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **deps:** upgrade xml-encryption to 6 and drop selfsigned for node:crypto ([3a04b80](https://github.com/NabilAldhamari/saml-sp/commit/3a04b80ca12410107f7f4e063927df505ebcf458))
+
 ## [3.1.0](https://github.com/NabilAldhamari/saml-sp/compare/v3.0.0...v3.1.0) (2026-07-09)
 
 
