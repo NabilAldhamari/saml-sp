@@ -26,6 +26,8 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
   test:
     name: Test (Node ${{ matrix.node }}, ${{ matrix.os }})
@@ -33,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [18, 20, 22]
+        node: [20, 22, 24]
         os: [ubuntu-latest]
         include:
           - node: 22
