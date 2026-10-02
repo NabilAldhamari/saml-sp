@@ -21,17 +21,30 @@ describe("decryptAssertion", () => {
     await expect(decryptAssertion("<enc/>", "key")).resolves.toBe("<saml:Assertion/>");
   });
 
-  it("disallows insecure algorithms in the options it passes down", async () => {
+  const encrypted = (alg: string): string =>
+    `<xenc:EncryptedData xmlns:xenc="http://www.w3.org/2001/04/xmlenc#">` +
+    `<xenc:EncryptionMethod Algorithm="${alg}"/></xenc:EncryptedData>`;
+
+  it.each([
+    "http://www.w3.org/2001/04/xmlenc#rsa-1_5",
+    "http://www.w3.org/2001/04/xmlenc#tripledes-cbc",
+  ])("refuses %s before calling the library", async (alg) => {
+    const err = await decryptAssertion(encrypted(alg), "key").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DecryptionError);
+    expect((err as Error).message).toMatch(/insecure encryption algorithm/);
+    expect(decryptMock).not.toHaveBeenCalled();
+  });
+
+  it("allows AES-CBC (still the default of many IdPs)", async () => {
     decryptMock.mockImplementation((_xml, _opts, cb: (e: Error | null, r?: string) => void) =>
       cb(null, "<a/>")
     );
-    await decryptAssertion("<enc/>", "key");
+    await expect(
+      decryptAssertion(encrypted("http://www.w3.org/2001/04/xmlenc#aes256-cbc"), "key")
+    ).resolves.toBe("<a/>");
     expect(decryptMock).toHaveBeenCalledWith(
-      "<enc/>",
-      expect.objectContaining({
-        key: "key",
-        disallowDecryptionWithInsecureAlgorithm: true,
-      }),
+      expect.any(String),
+      expect.objectContaining({ key: "key", disallowDecryptionWithInsecureAlgorithm: false }),
       expect.any(Function)
     );
   });

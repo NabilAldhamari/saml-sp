@@ -272,6 +272,9 @@ export function encryptAssertion(
         rsa_pub: publicKey,
         pem: spCertificate,
         encryptionAlgorithm,
+        // CBC is flagged insecure by xml-encryption; still used to simulate legacy IdPs.
+        disallowEncryptionWithInsecureAlgorithm: false,
+        warnInsecureAlgorithm: false,
         keyEncryptionAlgorithm: "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p",
       },
       (err, result) => {

@@ -1,6 +1,6 @@
 import { createPrivateKey } from "node:crypto";
 import type { IncomingMessage } from "node:http";
-import * as selfsigned from "selfsigned";
+import { generateSelfSigned } from "./internal/selfSignedCert";
 import {
   DestinationMismatchError,
   InResponseToError,
@@ -386,15 +386,11 @@ export class ServiceProvider {
    * boot breaks the trust relationship registered with your IdP.
    */
   static generateKeyPair(options: GenerateKeyPairOptions = {}): KeyPair {
-    const result = selfsigned.generate(
-      [{ name: "commonName", value: options.commonName ?? "saml-sp" }],
-      {
-        keySize: options.keySize ?? 2048,
-        days: options.days ?? 3650,
-        algorithm: "sha256",
-      }
-    );
-    return { privateKey: result.private, certificate: result.cert };
+    return generateSelfSigned({
+      commonName: options.commonName ?? "saml-sp",
+      keySize: options.keySize ?? 2048,
+      days: options.days ?? 3650,
+    });
   }
 
   private validate(xml: string): ReturnType<typeof validateResponse> {
